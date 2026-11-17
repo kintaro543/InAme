@@ -21,7 +21,7 @@ import ctypes
 # logging.basicConfig(level=logging.INFO)
 ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Kintakodach.InAme.4")
 
-os.environ["GEMINI_API_KEY"] = "AQ.Ab8RN6IGL-yJw-wiO_rkgrwR7bXd2T2wbMV1H-5j-HiYZQNdTw"
+os.environ["GEMINI_API_KEY"] = "i am not pushing my API key on github"
 
 def get_hwnds():
     hwnds = []
