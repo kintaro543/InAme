@@ -19,9 +19,9 @@ import win32con
 import ctypes
 # import logging
 # logging.basicConfig(level=logging.INFO)
-ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Kintakodach.InAme.4")
+ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Kintakodach.InAme.5")
 
-os.environ["GEMINI_API_KEY"] = "i am not pushing my API key on github"
+os.environ["GEMINI_API_KEY"] = "I put it in discord"
 
 def get_hwnds():
     hwnds = []
@@ -636,8 +636,9 @@ class InaPic(QWidget):
     def textbox_forceClosed(self):
         if self.chatOpened:
             self.chatOpened = False
-            self.inaButton.clicked.disconnect(self.enableNewChat)
-            self.inaButton.clicked.connect(self.openChat)
+            if not(self.sleeping):
+                self.inaButton.clicked.disconnect(self.enableNewChat)
+                self.inaButton.clicked.connect(self.openChat)
 
     def setNewAnimation(self,newAnim):
         self.current_animation.setPaused(True)
