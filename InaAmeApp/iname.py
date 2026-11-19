@@ -8,6 +8,7 @@ import random
 from google import genai
 from google.genai import types
 import os
+from dotenv import load_dotenv
 import re
 import numpy as np
 import sqlite3
@@ -21,7 +22,7 @@ import ctypes
 # logging.basicConfig(level=logging.INFO)
 ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Kintakodach.InAme.5")
 
-os.environ["GEMINI_API_KEY"] = "I put it in discord"
+load_dotenv()
 
 # Holds hwnds for all windows that Ina can stand, then return that list. Excludes Progman and WorkerW windows, as well as invisible windows and windows with no title or title "python"
 def get_hwnds():
