@@ -8,6 +8,7 @@ import random
 from google import genai
 from google.genai import types
 import os
+from dotenv import load_dotenv
 import re
 import numpy as np
 import sqlite3
@@ -21,10 +22,12 @@ import ctypes
 # logging.basicConfig(level=logging.INFO)
 ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Kintakodach.InAme.5")
 
-os.environ["GEMINI_API_KEY"] = "I put it in discord"
+load_dotenv()
 
+# Holds hwnds for all windows that Ina can stand, then return that list. Excludes Progman and WorkerW windows, as well as invisible windows and windows with no title or title "python"
 def get_hwnds():
     hwnds = []
+    # Callback for EnumWindows: collects every top-level window handle into hwnds.
     def handle_window(hwnd, extra):
         hwnds.append(hwnd)
     win32gui.EnumWindows(handle_window, None)
@@ -37,6 +40,8 @@ def get_hwnds():
             hwnds_real.append(hwnd)
     return hwnds_real
 
+
+# Rewrites first/second-person words in the user's message into "User"/"Ina" (e.g. "my" -> "User's", "you" -> "Ina") so the query matches the third-person wording memories are stored in.
 def rewrite_query(text):
     text = re.sub(r"\byou\b", "Ina", text, flags=re.IGNORECASE)
     text = re.sub(r"\byour\b", "Ina's", text, flags=re.IGNORECASE)
@@ -64,6 +69,7 @@ create_table = [
         );"""
 ]
 
+# Returns the path of the SQLite memory database (~/.ina_memory/ina_memories.db), creating the folder if it doesn't exist.
 def get_db_path():
     folder = Path.home() / ".ina_memory"
     folder.mkdir(exist_ok=True)
@@ -88,6 +94,7 @@ for mem_id, blob in conn.execute("SELECT memory_id, embedding FROM memories"):
 cursor.execute("SELECT EXISTS (SELECT 1 FROM name)")
 has_rows = cursor.fetchone()[0]
 
+# Stores the user's name in the global Username and saves it to the name table.
 def insert_name(conn,name):
     global Username
     Username = name
@@ -100,6 +107,7 @@ def insert_name(conn,name):
     conn.commit()
 
 class NameAsk(QDialog):
+    # Builds the first-run dialog: Ina's greeting, a text box for the user's name and Ina's picture, frameless, always on top, with a transparent background. Pressing Enter calls insert_name.
     def __init__(self):
         super().__init__()
         self.inputName = QLineEdit()
@@ -154,6 +162,7 @@ class NameAsk(QDialog):
             )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
+    # Opens a database connection, saves the typed name, and closes the dialog as accepted.
     @Slot()
     def insert_name(self):
         self.conn = sqlite3.connect(get_db_path())
@@ -161,6 +170,7 @@ class NameAsk(QDialog):
         self.accept()
 
 
+# Returns all stored memory embeddings stacked into one numpy matrix (one row per memory). Rebuilds it only when vectors changed (dirty flag). Returns None if there are no memories yet.
 def get_matrix():
     global matrix,dirty
     if dirty and vectors:
@@ -168,6 +178,7 @@ def get_matrix():
         dirty = False
     return matrix
 
+# Saves new memories to the database, skipping near-duplicates: first drops items more than 0.97 cosine-similar to a later item in the same batch, then drops items more than 0.96 similar to a memory already stored. Adds the remaining memories' ids and embeddings to the in-memory cache.
 def insert_memories(conn,text_embed_time_speaker):
     global dirty
     #print([mem[0] for mem in text_embed_time_speaker])
@@ -212,6 +223,7 @@ def insert_memories(conn,text_embed_time_speaker):
         dirty = True
 
 
+# Fetches the memories with the given ids from the database and splits them into Ina's memories and the user's memories, each as a list of (text, time) pairs.
 def relavant_memories(conn,acceptable_ids):
     cur = conn.cursor()
     place_holder = "(" + "?" + ",?"*(len(acceptable_ids)-1) + ")"
@@ -248,14 +260,17 @@ class Memories(BaseModel):
 # User : I like cookies and pies
 # Ina : I like cookies but i don't like pies.
 # """
+# Formats text as a search query for the embedding model.
 def prepare_query(query):
     return f"task: search result | query: {query}"
 
+# Formats text as a document for the embedding model. The title defaults to "none".
 def prepare_documents(content, title=None):
     if title is None:
         title = "none"
     return f"title: {title} | text: {content}"
 
+# Returns the Gemini embedding vector for a single text.
 def embed(text):
     result = client.models.embed_content(
         model="gemini-embedding-2",
@@ -263,9 +278,11 @@ def embed(text):
         )
     return result.embeddings[0].values
 
+# Embeds each text and returns the vectors as float32 byte strings, ready to store as SQLite BLOBs.
 def embeds(texts):
     return [np.asarray(embed(mem), dtype=np.float32).tobytes() for mem in texts]
 
+# Asks Gemini to extract lasting facts from one User/Ina exchange (split into user_memories and ina_memories), embeds each fact, tags it with the timestamp and speaker, and passes them to insert_memories. Does nothing if no facts were found.
 def save_memories(conn,dialogue,timestamp):
     #print(1)
     interaction = client.interactions.create(
@@ -313,6 +330,7 @@ def save_memories(conn,dialogue,timestamp):
     if new_memories:
         insert_memories(conn,text_embed_time_speaker)
 
+# Finds stored memories related to the user's message: rewrites pronouns, embeds the query and compares it with every stored memory by cosine similarity. Returns every memory above 0.80, or the 3 closest if none pass. Returns (ina_memories, user_memories); both are empty when nothing is stored.
 def get_relavant_memories(conn,query):
     query_embed = np.array(embed(prepare_query(rewrite_query(query))))
     doc_embed = get_matrix()
@@ -337,10 +355,12 @@ def get_relavant_memories(conn,query):
     return relavantIna, relavantUser
 
 class MemoryWorker(QObject):
+        # Keeps the queue that finished conversations arrive on to be saved.
         def __init__(self,memory_queue):
             super().__init__()
             self.memory_queue = memory_queue
 
+        # Runs on the background memory thread: takes (dialogue, timestamp) items from the queue and saves memories from each until it receives None, then closes the database connection and stops the thread. Errors are printed and don't stop the loop.
         @Slot()
         def run(self):
             self.conn = sqlite3.connect(get_db_path())
@@ -367,6 +387,7 @@ class ChatBubble(QWidget):
     saveSignal = Signal(tuple)
     closeSignal = Signal()
 
+    # Builds the chat bubble: an output box for Ina's reply (hidden at first) and an input line for the user. Applies the styling, makes it frameless and always on top, measures the line height used for resizing, and places it just above the character.
     def __init__(self,character_position):
         super().__init__()
         self.input_textbox = QLineEdit()
@@ -417,6 +438,7 @@ class ChatBubble(QWidget):
         self.position = initial_characterPosition
         self.talking = False
 
+    # When the bubble closes, asks a running reply thread to stop (waiting up to 3 seconds) and emits closeSignal so the character knows the chat was closed.
     def closeEvent(self,event):
         t = getattr(self, "chatThread", None)
         if t is not None and t.isRunning():
@@ -425,16 +447,19 @@ class ChatBubble(QWidget):
         self.closeSignal.emit()
         event.accept()
 
+    # Marks the user as talking once they start typing, so Ina doesn't fall asleep mid-conversation.
     @Slot()
     def still_typing(self):
         if not(self.talking):
             self.talking = True
 
+    # Moves the bubble so it stays just above the character when she moves.
     @Slot()
     def main_moved(self,moved):
         self.move(moved + QPoint(-30,-self.height()))
         self.position = moved
 
+    # Runs when the user presses Enter: emits state_change, clears the previous reply, starts an AIThread with the message, remembers what the user said, and hides the input until the reply finishes. Resets the bubble's size and position.
     @Slot()
     def start_conversation(self):
         self.output_textbox.setTextInteractionFlags(Qt.NoTextInteraction)
@@ -453,10 +478,12 @@ class ChatBubble(QWidget):
         self.resize(200,52)
         self.move(self.position + QPoint(-30,-52))
 
+    # Adds a streamed chunk of Ina's reply to the buffer of text waiting to be displayed.
     @Slot(str)
     def recieve_chunk(self,chunk):
         self.text_buffer += chunk
 
+    # Shows the output box and starts a 60 ms timer that types the reply out one character at a time.
     @Slot()
     def display_loop(self):
         self.output_textbox.show()
@@ -464,6 +491,7 @@ class ChatBubble(QWidget):
         self.display_timer.timeout.connect(self.display_next_character)
         self.display_timer.start(60)
 
+    # Timer tick: shows the next buffered character and grows the box upward when a new line starts. When the reply is complete and the buffer is empty, stops the timer, brings back the input box, makes the reply selectable, and emits saveSignal with the exchange and current time so it can be saved as memories.
     @Slot()
     def display_next_character(self):
         if self.chatThread.text_finished and not self.text_buffer:
@@ -492,6 +520,7 @@ class ChatBubble(QWidget):
         if self.old_height < self.new_lineHeight:
             self.move(QPoint(0,self.old_height - self.new_lineHeight) + self.pos())
 
+    # Resizes the output box to fit the current text and stores the new text height in new_lineHeight.
     def update_textbox_size(self):
         self.new_lineHeight = int(self.output_textbox.document().documentLayout().documentSize().height()*self.line_height)
         height = self.new_lineHeight + 2*self.output_textbox.frameWidth() + 10
@@ -500,11 +529,13 @@ class ChatBubble(QWidget):
     class AIThread(QThread):
         chunk_recieved = Signal(str)
         start_displaying = Signal()
+        # Stores the user's message and marks the reply as not finished yet.
         def __init__(self,input_msg):
             super().__init__()
             self.text_finished = False
             self.realInput = input_msg
 
+        # Runs on a separate thread: looks up memories relevant to the message, appends them as optional background notes, sends the message to the Gemini chat and emits each streamed chunk of the reply. Sets text_finished when the reply is complete.
         def run(self):
             self.conn = sqlite3.connect(get_db_path())
             self.relavantIna, self.relavantUser = get_relavant_memories(self.conn,self.realInput)
@@ -541,6 +572,7 @@ class ChatBubble(QWidget):
     
 class InaPic(QWidget):
     position_change = Signal(QPoint)
+    # Builds the main character window: a transparent clickable button stacked over the animation label, frameless and always on top, placed at the bottom-right of the screen, starting as Ame with a random idle animation. Also sets up the state flags, the database connection, the background memory-saving thread, and a 60-second sleep timer.
     def __init__(self):
         super().__init__()
         self.inaButton = QPushButton()
@@ -600,10 +632,12 @@ class InaPic(QWidget):
         self.sleep_time.timeout.connect(self.ina_sleep)
         self.sleep_time.start(60000)
 
+    # Puts a (dialogue, timestamp) pair on the queue for the memory worker to save.
     @Slot(tuple)
     def send_to_queue(self,quer_ti):
         self.memory_queue.put(quer_ti)
 
+    # On close, tells the memory worker to stop (by sending None), waits for its thread to finish, and closes the chat bubble if it's open.
     def closeEvent(self,event):
         self.memory_queue.put(None)
         self.memory_thread.wait()
@@ -612,6 +646,7 @@ class InaPic(QWidget):
         event.accept()
 
 
+    # Restarts the 60-second idle timer. If the character was asleep, wakes her up by reconnecting the click handler; as Ina (when this copy can chat) it also reopens the chat bubble.
     def reset_sleepTimer(self):
         self.sleep_time.stop()
         self.sleep_time.start(60000)
@@ -632,6 +667,7 @@ class InaPic(QWidget):
                     self.inaButton.clicked.connect(self.openChat)
             self.sleeping = False
 
+    # Runs when the chat bubble closes on its own: marks the chat as closed and, if not sleeping, makes clicks call openChat again.
     @Slot()
     def textbox_forceClosed(self):
         if self.chatOpened:
@@ -640,12 +676,14 @@ class InaPic(QWidget):
                 self.inaButton.clicked.disconnect(self.enableNewChat)
                 self.inaButton.clicked.connect(self.openChat)
 
+    # Pauses the current GIF and plays the given one instead.
     def setNewAnimation(self,newAnim):
         self.current_animation.setPaused(True)
         self.current_animation = QMovie(newAnim)
         self.current_animation.start()
         self.character_Label.setMovie(self.current_animation)
 
+    # Double-click: if standing on a window, falls to the floor and then walks home (fallThenWalk); otherwise walks home straight away (walkback). Ignored while asleep.
     def mouseDoubleClickEvent(self,event):
         if self.onWindow and not(self.sleeping) :
             self.onWindow = False
@@ -674,6 +712,7 @@ class InaPic(QWidget):
             self.timerwalk.timeout.connect(self.walkback)
             self.timerwalk.start(16)
 
+    # Timer tick for the double-click fall: drops the character under gravity. On reaching the floor, switches to the walking animation and starts walkback. Stops if she gets picked up.
     @Slot()
     def fallThenWalk(self):
         if self.flying:
@@ -700,6 +739,7 @@ class InaPic(QWidget):
         self.move(fell)
         self.position_change.emit(fell)
 
+    # Timer tick for falling straight to the floor, ignoring windows. Used when the window she stood on carried her off screen. On landing, plays a random idle animation.
     @Slot()
     def trueFall(self):
         if self.y() +180 >= self.floor:
@@ -718,9 +758,11 @@ class InaPic(QWidget):
         self.position_change.emit(fell)
         
 
+    # Remembers where on the character the mouse grabbed her, so dragging keeps that offset.
     def mousePressEvent(self,event):
         self.offset = QCursor.pos() - self.pos()
 
+    # Dragging: on the first move, stops any walking, falling or window-riding timers, restores normal size if asleep, and switches to the held animation. Then moves the character with the cursor, kept inside the screen's left and right edges and above the floor.
     def mouseMoveEvent(self,event):
         if not(self.mouseMoved):
             if self.fallingWalk:
@@ -762,6 +804,7 @@ class InaPic(QWidget):
         self.move(mouse_move)
         self.position_change.emit(mouse_move)
 
+    # When dropped after a drag, plays the falling animation, collects the current windows, and starts the fall timer.
     def mouseReleaseEvent(self,event):
         if self.mouseMoved:
             if not(self.doubleClicked):
@@ -780,6 +823,7 @@ class InaPic(QWidget):
                 self.elapsed_timer.start()
                 self.timer.start(16)
 
+    # Timer tick: walks right (Ame faster than Ina) until reaching the home spot near the right edge, then plays a random idle animation.
     @Slot()
     def walkback(self):
         if self.x() >= self.right_border - 180:
@@ -798,6 +842,7 @@ class InaPic(QWidget):
             self.move(walked_back)
             self.position_change.emit(walked_back)
 
+    # Timer tick while falling: moves down under gravity and checks each window that isn't minimized. If her feet land near a window's top or bottom edge, she stands there and starts following that window (moveWithWindow). If she reaches the floor first, she stops there with an idle animation.
     @Slot()
     def fall(self):
         for hwnd in self.realHwnds:
@@ -860,6 +905,7 @@ class InaPic(QWidget):
         self.move(fell)
         self.position_change.emit(fell)
 
+    # Timer tick while standing on a window: keeps her in the same spot relative to the window as it moves. She falls off if the window closes, is minimized or maximized, or changes size so she's no longer on its edge. If the window carries her off screen she falls straight to the floor (trueFall); if it pushes her down to the floor she stops there.
     @Slot(int)
     def moveWithWindow(self):
         if not(self.onWindow):
@@ -992,6 +1038,7 @@ class InaPic(QWidget):
             
 
     
+    # Click: switches between Ame and Ina, keeping a walking or idle animation. After switching to Ina, tries to become the copy allowed to chat; if that works, opens a chat bubble above her and makes the next click call enableNewChat.
     @Slot()
     def openChat(self):
         if not(self.currentlyAme):
@@ -1019,6 +1066,7 @@ class InaPic(QWidget):
             self.text_widget.closeSignal.connect(self.textbox_forceClosed)
             self.text_widget.show()
 
+    # Click while Ina's chat is open: switches back to Ame, closes the chat bubble, and makes clicks call openChat again.
     @Slot()
     def enableNewChat(self):
         if self.doubleClicked:
@@ -1032,6 +1080,7 @@ class InaPic(QWidget):
         self.chatOpened = False
         self.text_widget.close()
 
+    # Runs when a chat reply starts or finishes: plays a random Ina idle animation, unless she's walking home.
     @Slot()
     def new_ina(self):
         if self.doubleClicked:
@@ -1039,6 +1088,7 @@ class InaPic(QWidget):
         self.reset_sleepTimer()
         self.setNewAnimation(random.choice([":/animation/inaCakeScaled.gif",":/animation/inaCookScaled.gif",":/animation/inaFluteScaled.gif",":/animation/inaIdleScaled.gif"]))
 
+    # Runs after 60 seconds idle, unless she's being dragged: puts her to sleep and turns off clicking. Ame plays a sitting animation. Ina plays a sleeping animation and closes her chat bubble, but not while the user is typing or waiting for a reply.
     @Slot()
     def ina_sleep(self):
         if not(self.flying):
@@ -1079,6 +1129,7 @@ class InaPic(QWidget):
                     self.current_animation.setScaledSize(QSize(160,120))
                     self.setNewAnimation(":/animation/inaSleepRotatedScaled.gif") 
 
+# If this copy can't chat yet, tries to take the lock file that lets only one running copy chat. On success, loads the stored memory embeddings into the in-memory cache.
 def try_enable_chat(conn):
     global can_chat
     if not can_chat:
